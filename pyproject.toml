@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oci-data-quality-sentinel"
+version = "0.1.0"
+description = "Offline dataset profiling and drift checks on synthetic CSV data"
+requires-python = ">=3.10"
+readme = "README.md"
+
+[project.scripts]
+dq-sentinel = "dq_sentinel.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

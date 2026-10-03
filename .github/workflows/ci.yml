@@ -1,0 +1,24 @@
+name: CI
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install package
+        run: python -m pip install -e .
+      - name: Tests
+        run: python -m unittest discover -s tests -v
+      - name: CLI smoke (clean batch passes, drifted batch flags)
+        run: |
+          dq-sentinel profile examples/baseline.csv --key order_id --output profile.json
+          dq-sentinel check profile.json examples/good.csv
+          dq-sentinel check profile.json examples/drifted.csv --fail-on high || test $? -eq 2
