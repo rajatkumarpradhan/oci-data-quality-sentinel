@@ -31,12 +31,31 @@ python -m unittest discover -s tests -v
 | DQ008 | high | Duplicate values in the key column |
 | DQ009 | low | Batch under 50 rows: drift statistics skipped |
 | DQ010 | medium | Newest timestamp older than `--max-age-days` |
+| DQ011 | high / medium | Value outside an `allowed_values` set (medium if the column is missing) |
+| DQ012 | medium | Value does not fully match a `patterns` regex (or the column is missing) |
+| DQ013 | high / low | Cross-column or threshold rule fails (high); rows skipped because the two values are different kinds or mix timezone-aware and naive dates (low) |
+
+### Expectations file (optional)
+
+```
+dq-sentinel check profile.json new.csv --expectations examples/expectations.json
+```
+
+```json
+{
+  "allowed_values": {"region": ["ap-hyderabad-1", "ap-mumbai-1", "us-ashburn-1"]},
+  "patterns": {"coupon": "SAVE[0-9]{2}|NEW[0-9]{2}"},
+  "rules": [{"left": "amount", "op": ">", "right_value": 0, "name": "amount is positive"}]
+}
+```
+
+Rules compare a column with another column (`right`) or a number (`right_value`), with `>= > <= < == !=`. Values are compared as numbers, ISO dates or text, and only like kinds are compared. Blank values are skipped (the null-rate check covers them). Patterns must match the whole value. Allowed values are compared as text. A malformed file exits with an error and a message instead of being ignored. Without `--expectations`, output is identical to before.
 
 PSI uses the baseline's own decile bins and measured bin shares, so tied baselines are handled. KS compares against a stored baseline sample (up to 2000 points). The PSI cut-offs are common rules of thumb, not guarantees.
 
 ## Limits
 
-- Only null, type, distribution, range, key and freshness checks. No cross-column rules, referential checks or custom expectations.
+- Only null, type, distribution, range, key and freshness checks. Expectations are limited to value sets, full-match regexes and one-comparison rules; no referential checks, aggregates or multi-condition rules.
 - High-cardinality text columns (more than 20 distinct values, such as timestamps and free text) are only checked for nulls, not drift.
 - Type inference is "all non-null values parse as numbers or not"; dates are treated as text.
 - With small baselines, the min/max range check is noisy at the tails.

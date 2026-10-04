@@ -6,7 +6,7 @@ import json
 import sys
 from datetime import datetime, timezone
 
-from . import checks, profile
+from . import checks, expectations, profile
 
 
 def main(argv=None) -> int:
@@ -24,6 +24,7 @@ def main(argv=None) -> int:
     c.add_argument("--timestamp-col")
     c.add_argument("--max-age-days", type=float)
     c.add_argument("--now", help="ISO time to measure freshness against (default: current time)")
+    c.add_argument("--expectations", help="JSON file with allowed_values, patterns and cross-column rules")
     c.add_argument("--output")
     c.add_argument("--fail-on", choices=["high", "medium", "low"])
     a = ap.parse_args(argv)
@@ -39,8 +40,12 @@ def main(argv=None) -> int:
         now = datetime.fromisoformat(a.now.replace("Z", "+00:00")) if a.now else None
         if now and not now.tzinfo:
             now = now.replace(tzinfo=timezone.utc)
-        fs = checks.check(base, a.csv, a.key, a.timestamp_col, a.max_age_days, now)
-    except (OSError, json.JSONDecodeError, csv.Error, profile.ProfileError, ValueError, KeyError) as e:
+        expect = None
+        if a.expectations:
+            with open(a.expectations, encoding="utf-8") as f:
+                expect = expectations.load(json.load(f))
+        fs = checks.check(base, a.csv, a.key, a.timestamp_col, a.max_age_days, now, expect)
+    except (OSError, json.JSONDecodeError, csv.Error, profile.ProfileError, expectations.ExpectationError, ValueError, KeyError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     for f in fs:

@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
-from . import drift, profile
+from . import drift, expectations, profile
 
 SEV = {"high": 0, "medium": 1, "low": 2}
 MIN_ROWS = 50            # below this, drift statistics are not trusted
@@ -27,7 +27,8 @@ class Finding:
 
 
 def check(baseline: dict, path: str, key: str | None = None, timestamp_col: str | None = None,
-          max_age_days: float | None = None, now: datetime | None = None) -> list[Finding]:
+          max_age_days: float | None = None, now: datetime | None = None,
+          expect: dict | None = None) -> list[Finding]:
     cols, rows = profile.read_csv(path)
     out: list[Finding] = []
     base = {c["name"]: c for c in baseline["columns"]}
@@ -114,5 +115,7 @@ def check(baseline: dict, path: str, key: str | None = None, timestamp_col: str 
                     out.append(Finding("DQ010", "medium", timestamp_col,
                                        f"Newest record is {age:.1f} days old (limit {max_age_days:g}).",
                                        {"age_days": round(age, 2)}))
+    if expect:
+        out.extend(expectations.evaluate(expect, cols, rows, Finding))
     out.sort(key=lambda f: (SEV[f.severity], f.rule, f.column))
     return out

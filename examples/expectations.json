@@ -1,0 +1,5 @@
+{
+  "allowed_values": {"region": ["ap-hyderabad-1", "ap-mumbai-1", "us-ashburn-1"]},
+  "patterns": {"coupon": "SAVE[0-9]{2}|NEW[0-9]{2}"},
+  "rules": [{"left": "amount", "op": ">", "right_value": 0, "name": "amount is positive"}]
+}
