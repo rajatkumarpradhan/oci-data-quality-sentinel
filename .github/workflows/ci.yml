@@ -22,3 +22,8 @@ jobs:
           dq-sentinel profile examples/baseline.csv --key order_id --output profile.json
           dq-sentinel check profile.json examples/good.csv
           dq-sentinel check profile.json examples/drifted.csv --fail-on high || test $? -eq 2
+      - name: CLI smoke for date checks (events example)
+        run: |
+          dq-sentinel profile examples/events_baseline.csv --key event_id --output events_profile.json
+          dq-sentinel check events_profile.json examples/events_good.csv --now 2026-10-12T00:00:00Z
+          dq-sentinel check events_profile.json examples/events_drifted.csv --now 2026-10-12T00:00:00Z --fail-on high || test $? -eq 2

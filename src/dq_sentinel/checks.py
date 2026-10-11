@@ -14,6 +14,26 @@ NULL_JUMP_MEDIUM, NULL_JUMP_HIGH = 0.05, 0.20
 RANGE_OUT_MEDIUM = 0.03  # share outside baseline [min, max]; same-distribution batches stay around 1% or less
 
 
+DATE_MIN_ROWS = MIN_ROWS
+MIN_BASE_DAYS_GAP = 3      # baseline needs this many distinct days to say what a normal gap is
+MIN_BASE_DAYS_WEEKDAY = 14  # two weeks, or the weekday mix says nothing
+GAP_MIN_DAYS = 1  # a candidate gap must beat the baseline's largest gap by this much (and by 2x)
+
+
+def _share_psi(base: list[float], cand: list[float]) -> float:
+    import math
+    psi = 0.0
+    for e, a in zip(base, cand):
+        a, e = max(a, drift.EPS), max(e, drift.EPS)
+        psi += (a - e) * math.log(a / e)
+    return psi
+
+
+def _noise_adjusted_psi(base: list[float], cand: list[float], n: int, n_base: int) -> float:
+    """PSI minus its expected sampling noise for two same-distribution samples: about (bins - 1) * (1/n + 1/n_base)."""
+    return _share_psi(base, cand) - (len(base) - 1) * (1 / n + 1 / max(n_base, 1))
+
+
 @dataclass
 class Finding:
     rule: str
@@ -24,6 +44,49 @@ class Finding:
 
     def to_dict(self):
         return asdict(self)
+
+
+def _date_findings(name: str, b: dict, live: list[str], now: datetime | None) -> list[Finding]:
+    out: list[Finding] = []
+    parsed = [profile.parse_date(v) for v in live]
+    ds = sorted(d for d, _ in parsed)
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    # date-only values are compared by calendar day, so "today" is never in the future
+    future = [d for d, t in parsed if (d > now if t else d.date() > now.date())]
+    if future:
+        share = len(future) / len(ds)
+        out.append(Finding("DQ014", "high" if share >= 0.05 else "medium", name,
+                           f"{len(future)} value(s) ({share:.1%}) are in the future; latest {max(future).isoformat()}.",
+                           {"future_count": len(future), "latest": max(future).isoformat()}))
+    # future values are reported above and left out of the gap and mix checks, so they cannot fake a gap
+    parsed = [(d, t) for d, t in parsed if not (d > now if t else d.date() > now.date())]
+    ds = sorted(d for d, _ in parsed)
+    days = sorted({d.date() for d in ds})
+    gaps = [(b2 - a).days for a, b2 in zip(days, days[1:])]
+    if gaps and len(ds) >= DATE_MIN_ROWS and b.get("distinct_days", 0) >= MIN_BASE_DAYS_GAP:
+        base_gap = b.get("max_gap_days", 0)
+        limit = max(2 * base_gap, base_gap + GAP_MIN_DAYS)
+        if max(gaps) > limit:
+            out.append(Finding("DQ015", "medium", name,
+                               f"Gap of {max(gaps)} days with no records (baseline largest gap {base_gap}, limit {limit}).",
+                               {"max_gap_days": max(gaps), "baseline_max_gap_days": base_gap}))
+    if len(ds) >= DATE_MIN_ROWS and b.get("distinct_days", 0) >= MIN_BASE_DAYS_WEEKDAY and "weekday_shares" in b:
+        cand = [sum(d.weekday() == i for d in ds) / len(ds) for i in range(7)]
+        adj = _noise_adjusted_psi(b["weekday_shares"], cand, len(ds), b.get("n", 0))
+        if adj >= PSI_MEDIUM:
+            out.append(Finding("DQ016", "high" if adj >= PSI_HIGH else "medium", name,
+                               f"Day-of-week mix shift (noise-adjusted PSI {adj:.2f}).", {"psi_adjusted": round(adj, 4)}))
+    if b.get("has_time") and "hour_shares" in b:
+        tm = sorted(d for d, t in parsed if t)
+        if len(tm) >= DATE_MIN_ROWS:
+            ch = [sum(d.hour == i for d in tm) / len(tm) for i in range(24)]
+            adj = _noise_adjusted_psi(b["hour_shares"], ch, len(tm), b.get("n", 0))
+            if adj >= PSI_MEDIUM:
+                out.append(Finding("DQ017", "high" if adj >= PSI_HIGH else "medium", name,
+                                   f"Hour-of-day mix shift (noise-adjusted PSI {adj:.2f}).", {"psi_adjusted": round(adj, 4)}))
+    return out
 
 
 def check(baseline: dict, path: str, key: str | None = None, timestamp_col: str | None = None,
@@ -48,6 +111,8 @@ def check(baseline: dict, path: str, key: str | None = None, timestamp_col: str 
         b = base[name]
         vals = [r[name] for r in rows]
         cur_type = profile.infer_type(vals)
+        if cur_type == "date" and b["type"] == "categorical":
+            cur_type = "categorical"  # profile made before date detection: dates were plain text
         if cur_type != b["type"] and cur_type != "empty" and b["type"] != "empty":
             out.append(Finding("DQ003", "high", name, f"Type changed from {b['type']} to {cur_type}.",
                                {"baseline": b["type"], "candidate": cur_type}))
@@ -63,6 +128,9 @@ def check(baseline: dict, path: str, key: str | None = None, timestamp_col: str 
             continue
         if name == baseline.get("key") or name == key or name in baseline.get("ignore_drift", []):
             continue  # identifiers and declared columns are not drift-tested
+        if b["type"] == "date":
+            out.extend(_date_findings(name, b, live, now))
+            continue
         if b["type"] == "categorical" and b.get("freq_truncated"):
             continue  # high-cardinality text (ids, timestamps, free text): only nulls are checked
         if b["type"] == "numeric":

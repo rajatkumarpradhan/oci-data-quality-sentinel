@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import csv
 import math
+import re
+from datetime import datetime, timedelta, timezone
 
 MAX_CATEGORIES = 20
 NULL_TOKENS = {"", "na", "n/a", "null", "none", "nan"}
@@ -22,6 +24,39 @@ def _num(v: str):
     except ValueError:
         return None
     return x if math.isfinite(x) else None
+
+
+_DATE_RE = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2})"
+    r"(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(Z|[+-]\d{2}:?\d{2})?)?$")
+
+
+def parse_date(v: str):
+    """Strict ISO 8601 date or timestamp -> (UTC datetime, has_time), or None.
+
+    Accepts 2026-09-01, 2026-09-01T10:30, 2026-09-01 10:30:15, 2026-09-01T10:30:15Z and
+    offsets such as +05:30 or -0700. A date alone is read as midnight UTC. Timestamps without
+    an offset are read as UTC. Anything else (13/05/2026, 2026-9-1, 20260901) is not a date.
+    Parsed by hand so Python 3.10 and 3.12 agree.
+    """
+    m = _DATE_RE.match(v.strip())
+    if not m:
+        return None
+    y, mo, d, hh, mi, ss, frac, tz = m.groups()
+    has_time = hh is not None
+    try:
+        dt = datetime(int(y), int(mo), int(d), int(hh or 0), int(mi or 0), int(ss or 0),
+                      int((frac or "0").ljust(6, "0")[:6]), tzinfo=timezone.utc)
+        if tz and tz != "Z":
+            sign = 1 if tz[0] == "+" else -1
+            digits = tz[1:].replace(":", "")
+            oh, om = int(digits[:2]), int(digits[2:])
+            if oh > 23 or om > 59:
+                return None
+            dt = dt - sign * timedelta(hours=oh, minutes=om)
+    except ValueError:
+        return None
+    return dt, has_time
 
 
 def read_csv(path: str) -> tuple[list[str], list[dict]]:
@@ -54,7 +89,11 @@ def infer_type(values: list[str]) -> str:
     vals = [v for v in values if not is_null(v)]
     if not vals:
         return "empty"
-    return "numeric" if all(_num(v) is not None for v in vals) else "categorical"
+    if all(_num(v) is not None for v in vals):
+        return "numeric"
+    if all(parse_date(v) for v in vals):
+        return "date"  # all values are ISO dates or timestamps; mixed formats stay categorical
+    return "categorical"
 
 
 def profile_column(name: str, values: list[str]) -> dict:
@@ -70,6 +109,8 @@ def profile_column(name: str, values: list[str]) -> dict:
         p.update(min=xs[0], max=xs[-1], mean=sum(xs) / len(xs), deciles=deciles,
                  bin_shares=bin_shares(deciles, xs),
                  sample=xs if len(xs) <= 2000 else [quantile(xs, i / 1999) for i in range(2000)])
+    elif t == "date":
+        p.update(date_profile(live))
     elif t == "categorical":
         counts: dict[str, int] = {}
         for v in live:
@@ -79,6 +120,20 @@ def profile_column(name: str, values: list[str]) -> dict:
         p["freq"] = {k: c / len(live) for k, c in top}
         p["freq_truncated"] = len(counts) > MAX_CATEGORIES
     return p
+
+
+def date_profile(live: list[str]) -> dict:
+    parsed = [parse_date(v) for v in live]
+    ds = sorted(d for d, _ in parsed)
+    has_time = any(t for _, t in parsed)
+    days = sorted({d.date() for d in ds})
+    gaps = [(b - a).days for a, b in zip(days, days[1:])]
+    out = {"n": len(ds), "min": ds[0].isoformat(), "max": ds[-1].isoformat(), "has_time": has_time,
+           "distinct_days": len(days), "max_gap_days": max(gaps) if gaps else 0,
+           "weekday_shares": [sum(d.weekday() == i for d in ds) / len(ds) for i in range(7)]}
+    if has_time:
+        out["hour_shares"] = [sum(d.hour == i for d in ds) / len(ds) for i in range(24)]
+    return out
 
 
 def profile_file(path: str, key: str | None = None, ignore_drift: list[str] | None = None) -> dict:
